@@ -1,0 +1,97 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{coverstyle}[2025/10/28 Fancy cover page]
+
+\RequirePackage{tikz}
+\RequirePackage{xcolor}
+\RequirePackage{etoolbox}
+\RequirePackage{geometry}
+
+\usetikzlibrary{calc}
+
+\definecolor{coverPrimary}{HTML}{fff1f1}
+\definecolor{coverAccent}{HTML}{ff7f7f}
+\definecolor{coverAccentLight}{HTML}{ffb3b3}
+
+\newcommand{\@coverCourse}{}
+\newcommand{\@coverTitle}{}
+\newcommand{\@coverSubtitle}{}
+\newcommand{\@coverAuthor}{}
+\newcommand{\@coverStudentID}{}
+\newcommand{\@coverCollege}{}
+\newcommand{\@coverInstructor}{}
+\newcommand{\@coverDate}{\today}
+
+\newcommand{\coverCourse}[1]{\gdef\@coverCourse{#1}}
+\newcommand{\coverTitle}[1]{\gdef\@coverTitle{#1}}
+\newcommand{\coverSubtitle}[1]{\gdef\@coverSubtitle{#1}}
+\newcommand{\coverAuthor}[1]{\gdef\@coverAuthor{#1}}
+\newcommand{\coverStudentID}[1]{\gdef\@coverStudentID{#1}}
+\newcommand{\coverCollege}[1]{\gdef\@coverCollege{#1}}
+\newcommand{\coverInstructor}[1]{\gdef\@coverInstructor{#1}}
+\newcommand{\coverDate}[1]{\gdef\@coverDate{#1}}
+
+\newcommand{\coverInfoRow}[2]{%
+  \ifdefempty{#2}{}{%
+    \zihao{-2}#1： & #2 \\
+  }%
+}
+
+\newcommand{\makeFancyCover}{%
+  \begin{titlepage}
+    \newgeometry{left=2.8cm,right=2.8cm,top=3.2cm,bottom=3.2cm}
+    \thispagestyle{empty}
+
+    \begin{tikzpicture}[remember picture,overlay]
+      \fill[coverAccentLight!60] (current page.south west) rectangle (current page.north east);
+
+      \path let \p1 = (current page.north east), \p2 = (current page.south west) in
+        \pgfextra{
+          \pgfmathsetmacro{\width}{veclen(\x1-\x2,\y1-\y2)}
+        };
+
+      \filldraw[coverPrimary!88] 
+        ($(current page.north east)+(-0.5,0.8)$) .. controls +(-4,-0.5) and +(1,2) ..
+        ($(current page.north west)+(1.2,-0.4)$) .. controls +(1,-2.5) and +(2,1.5) ..
+        ($(current page.south east)+(-1.4,2.5)$) -- cycle;
+
+      \filldraw[coverAccent!85] 
+        ($(current page.south west)+(-0.6,1.8)$) .. controls +(2,-0.4) and +(-1,1.2) ..
+        ($(current page.center)+(-2.3,-1.5)$) .. controls +(1,-1.2) and +(-2,1.6) ..
+        ($(current page.south east)+(-2.1,0.6)$) -- cycle;
+
+      \foreach \i in {-1,...,8}{
+        \foreach \j in {-3,...,6}{
+          \fill[coverAccent!45]
+            ($(current page.south west)+(0.95*\i,0.95*\j)$) circle[radius=0.09];
+        }
+      }
+    \end{tikzpicture}
+
+    \vspace*{0.18\textheight}
+
+    \centering
+    \color{pink}
+    \bfseries
+    \ifdefempty{\@coverCourse}{}{ {\color{black}\zihao{1}\@coverCourse\par} \vspace{1.2em} }
+    \ifdefempty{\@coverTitle}{}{ {\color{black}\zihao{2}\@coverTitle\par} }
+    \ifdefempty{\@coverSubtitle}{}{ \vspace{0.8em}{\zihao{-1}\@coverSubtitle\par} }
+
+    % ----- 封面底部信息：左齐 -----
+    \vfill
+    \begin{flushleft}
+      \color{black}
+      \zihao{-2}\begin{tabular}{@{}ll@{}}
+        \coverInfoRow{学院}{\@coverCollege}\\
+        \coverInfoRow{学号}{\@coverStudentID}\\
+        \coverInfoRow{姓名}{\@coverAuthor}\\
+        \coverInfoRow{日期}{\@coverDate}\\
+      \end{tabular}
+    \end{flushleft}
+
+  \end{titlepage}
+  \restoregeometry
+}
+
+
+
+
