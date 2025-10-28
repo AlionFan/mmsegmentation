@@ -1,0 +1,1234 @@
+数据集
+1. 数据集分析
+1. 分析图像均值、标准差、不同类别像素数量。
+import os
+import json
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from PIL import Image
+from tqdm import tqdm
+
+from torch.utils.data import Dataset, DataLoader
+import torchvision.transforms as transforms
+from collections import defaultdict, Counter
+import pandas as pd
+plt.style.use('default')
+sns.set_palette("husl")
+plt.rcParams['figure.dpi'] = 200
+plt.rcParams['savefig.dpi'] = 200
+
+class CityscapesConfig:
+    """Cityscapes dataset configuration class"""
+    def __init__(self):
+        # Cityscapes 19 main classes
+        self.classes = [
+            'road', 'sidewalk', 'building', 'wall', 'fence', 
+            'pole', 'traffic light', 'traffic sign', 'vegetation', 'terrain',
+            'sky', 'person', 'rider', 'car', 'truck', 
+            'bus', 'train', 'motorcycle', 'bicycle'
+        ]
+        
+        # Class ID mapping (19 main classes)
+        self.class_ids = {
+            7: 0,  8: 1,  11: 2, 12: 3, 13: 4, 
+            17: 5, 19: 6, 20: 7, 21: 8, 22: 9,
+            23: 10, 24: 11, 25: 12, 26: 13, 27: 14,
+            28: 15, 31: 16, 32: 17, 33: 18
+        }
+        
+        # Color mapping (for visualization)
+        self.colors = [
+            (128/255, 64/255, 128/255),   # road
+            (244/255, 35/255, 232/255),   # sidewalk
+            (70/255, 70/255, 70/255),     # building
+            (102/255, 102/255, 156/255),  # wall
+            (190/255, 153/255, 153/255),  # fence
+            (153/255, 153/255, 153/255),  # pole
+            (250/255, 170/255, 30/255),   # traffic light
+            (220/255, 220/255, 0/255),    # traffic sign
+            (107/255, 142/255, 35/255),   # vegetation
+            (152/255, 251/255, 152/255),  # terrain
+            (70/255, 130/255, 180/255),   # sky
+            (220/255, 20/255, 60/255),    # person
+            (255/255, 0/255, 0/255),      # rider
+            (0/255, 0/255, 142/255),      # car
+            (0/255, 0/255, 70/255),       # truck
+            (0/255, 60/255, 100/255),     # bus
+            (0/255, 80/255, 100/255),     # train
+            (0/255, 0/255, 230/255),      # motorcycle
+            (119/255, 11/255, 32/255)     # bicycle
+        ]
+数据分析代码
+class CityscapesAnalyzer:
+    """Cityscapes dataset analyzer"""
+    
+    def __init__(self, data_root):
+        self.data_root = data_root
+        self.config = CityscapesConfig()
+        self.stats = {}
+        
+    def get_image_paths(self, split='train'):
+        """Get image and label paths for specified split"""
+        img_dir = os.path.join(self.data_root, 'leftImg8bit', split)
+        label_dir = os.path.join(self.data_root, 'gtFine', split)
+        
+        image_paths = []
+        label_paths = []
+        
+        for city in os.listdir(img_dir):
+            city_img_dir = os.path.join(img_dir, city)
+            city_label_dir = os.path.join(label_dir, city)
+            
+            for img_name in os.listdir(city_img_dir):
+                if img_name.endswith('_leftImg8bit.png'):
+                    base_name = img_name.replace('_leftImg8bit.png', '')
+                    label_name = base_name + '_gtFine_labelIds.png'
+                    
+                    img_path = os.path.join(city_img_dir, img_name)
+                    label_path = os.path.join(city_label_dir, label_name)
+                    
+                    if os.path.exists(label_path):
+                        image_paths.append(img_path)
+                        label_paths.append(label_path)
+        
+        return image_paths, label_paths
+    
+    def calculate_mean_std(self, image_paths, sample_size=1000):
+        """Calculate mean and standard deviation of image data"""
+        print("Calculating image mean and standard deviation...")
+        
+        if sample_size > len(image_paths):
+            sample_size = len(image_paths)
+        
+        sampled_paths = np.random.choice(image_paths, sample_size, replace=False)
+        
+        pixel_sum = np.zeros(3)
+        pixel_sq_sum = np.zeros(3)
+        pixel_count = 0
+        
+        for img_path in tqdm(sampled_paths, desc="Processing images"):
+            img = Image.open(img_path).convert('RGB')
+            img_array = np.array(img) / 255.0
+            
+            pixel_sum += img_array.sum(axis=(0, 1))
+            pixel_sq_sum += (img_array ** 2).sum(axis=(0, 1))
+            pixel_count += img_array.shape[0] * img_array.shape[1]
+        
+        mean = pixel_sum / pixel_count
+        std = np.sqrt(pixel_sq_sum / pixel_count - mean ** 2)
+        
+        # Convert numpy arrays to Python lists for JSON serialization
+        self.stats['mean'] = mean.tolist()
+        self.stats['std'] = std.tolist()
+        
+        return mean, std
+    
+    def analyze_class_distribution(self, label_paths, sample_size=500):
+        """Analyze class distribution"""
+        print("Analyzing class distribution...")
+        
+        if sample_size > len(label_paths):
+            sample_size = len(label_paths)
+        
+        sampled_paths = np.random.choice(label_paths, sample_size, replace=False)
+        class_pixel_counts = defaultdict(int)
+        total_pixels = 0
+        
+        for label_path in tqdm(sampled_paths, desc="Processing labels"):
+            label = Image.open(label_path)
+            label_array = np.array(label)
+            
+            for old_id, new_id in self.config.class_ids.items():
+                mask = (label_array == old_id)
+                class_pixel_counts[new_id] += int(mask.sum())  # Convert to Python int
+                total_pixels += int(mask.sum())  # Convert to Python int
+        
+        # Calculate frequencies
+        class_frequencies = {}
+        for class_id, count in class_pixel_counts.items():
+            class_frequencies[class_id] = float(count / total_pixels) if total_pixels > 0 else 0.0
+        
+        self.stats['class_distribution'] = class_frequencies
+        self.stats['total_pixels'] = int(total_pixels)  # Convert to Python int
+        
+        return class_frequencies
+    
+    def analyze_image_sizes(self, image_paths, sample_size=500):
+        """Analyze image size distribution"""
+        print("Analyzing image sizes...")
+        
+        if sample_size > len(image_paths):
+            sample_size = len(image_paths)
+        
+        sampled_paths = np.random.choice(image_paths, sample_size, replace=False)
+        heights = []
+        widths = []
+        
+        for img_path in tqdm(sampled_paths, desc="Analyzing sizes"):
+            img = Image.open(img_path)
+            width, height = img.size
+            widths.append(int(width))  # Convert to Python int
+            heights.append(int(height))  # Convert to Python int
+        
+        # Convert all numpy values to Python native types for JSON serialization
+        size_stats = {
+            'heights': heights,
+            'widths': widths,
+            'avg_height': float(np.mean(heights)),
+            'avg_width': float(np.mean(widths)),
+            'min_height': int(np.min(heights)),
+            'min_width': int(np.min(widths)),
+            'max_height': int(np.max(heights)),
+            'max_width': int(np.max(widths))
+        }
+        
+        self.stats['size_stats'] = size_stats
+        return size_stats
+
+    def save_stats(self, save_path='./result/analysis/cityscapes_statistics.json'):
+        """Save statistical results"""
+        def convert_to_serializable(obj):
+            if isinstance(obj, (np.integer, np.int64)):
+                return int(obj)
+            elif isinstance(obj, (np.floating, np.float64)):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {key: convert_to_serializable(value) for key, value in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_serializable(item) for item in obj]
+            else:
+                return obj
+        
+        serializable_stats = convert_to_serializable(self.stats)
+        
+        with open(save_path, 'w') as f:
+            json.dump(serializable_stats, f, indent=4)
+        print(f"Statistics saved to: {save_path}")
+    
+    def load_stats(self, load_path='./result/analysis/cityscapes_statistics.json'):
+        """Load previously saved statistics"""
+        if os.path.exists(load_path):
+            with open(load_path, 'r') as f:
+                self.stats = json.load(f)
+            print(f"Statistics loaded from: {load_path}")
+            return True
+        else:
+            print(f"Statistics file not found: {load_path}")
+            return False
+CityscapesAnalyzer类中定义了5个函数。
+
+函数
+功能
+1
+get_image_paths(self, split='train')
+地址处理，输入cityscapes地址，输出图像和标签的地址
+2
+calculate_mean_std(self, image_paths, sample_size=1000)
+计算均值和标准差，采样大小是对多少图像进行计算,（一共2975张）
+返回均值和标准差
+3
+analyze_class_distribution(self, label_paths, sample_size=500)
+分析类的分布，每个类别占比是多少，返回各类别频率
+4
+analyze_image_sizes(self, image_paths, sample_size=500)
+统计图像尺寸（全是2048x1024），这个函数没啥用
+5
+save_stats(self, save_path='xxx')
+保存统计的数据，下次就不用计算了
+数据可视化代码
+class CityscapesVisualizer:
+    """Cityscapes data visualization class"""
+    
+    def __init__(self, config):
+        self.config = config
+    
+    def plot_mean_std(self, mean, std, save_path=None, figsize=(12, 5)):
+        """Plot mean and standard deviation"""
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+        
+        # Mean plot
+        channels = ['R', 'G', 'B']
+        bars1 = ax1.bar(channels, mean, color=['red', 'green', 'blue'], alpha=0.7)
+        ax1.set_title('Image Channel Means', fontsize=14, fontweight='bold')
+        ax1.set_ylabel('Mean Value', fontsize=12)
+        ax1.grid(True, alpha=0.3)
+        for bar, value in zip(bars1, mean):
+            ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
+                    f'{value:.3f}', ha='center', va='bottom', fontweight='bold')
+        
+        # Standard deviation plot
+        bars2 = ax2.bar(channels, std, color=['red', 'green', 'blue'], alpha=0.7)
+        ax2.set_title('Image Channel Standard Deviations', fontsize=14, fontweight='bold')
+        ax2.set_ylabel('Standard Deviation', fontsize=12)
+        ax2.grid(True, alpha=0.3)
+        for bar, value in zip(bars2, std):
+            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
+                    f'{value:.3f}', ha='center', va='bottom', fontweight='bold')
+        
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path, dpi=200, bbox_inches='tight', facecolor='white')
+        plt.show()
+    
+    def plot_class_distribution(self, class_distribution, save_path=None, figsize=(14, 12)):
+        """Plot class distribution with better label placement"""
+        class_names = [self.config.classes[i] for i in range(len(self.config.classes))]
+
+        # 修复：处理字符串键的问题
+        frequencies = []
+        for i in range(len(class_names)):
+            # 尝试用整数键和字符串键获取值
+            freq = class_distribution.get(i, class_distribution.get(str(i), 0))
+            frequencies.append(freq)
+
+        # Create DataFrame for sorting
+        df = pd.DataFrame({
+            'class': class_names,
+            'frequency': frequencies
+        })
+        df = df.sort_values('frequency', ascending=False)
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize)
+
+        # Bar chart
+        bars = ax1.bar(df['class'], df['frequency'], color=[self.config.colors[i] for i in range(len(class_names))])
+        ax1.set_title('Cityscapes Class Pixel Distribution', fontsize=16, fontweight='bold')
+        ax1.set_ylabel('Pixel Frequency', fontsize=12)
+        ax1.tick_params(axis='x', rotation=45)
+        ax1.grid(True, alpha=0.3, axis='y')
+
+        # Add values on bars
+        for bar in bars:
+            height = bar.get_height()
+            ax1.text(bar.get_x() + bar.get_width()/2., height + 0.001,
+                    f'{height:.4f}', ha='center', va='bottom', fontsize=9)
+
+        # 改进的饼图部分
+        threshold = 0.01  # Only show classes with frequency > 1%
+        major_classes = df[df['frequency'] > threshold]
+        other_freq = df[df['frequency'] <= threshold]['frequency'].sum()
+
+        if other_freq > 0:
+            pie_data = list(major_classes['frequency']) + [other_freq]
+            pie_labels = list(major_classes['class']) + ['Other']
+            # 修复：确保颜色索引正确
+            pie_colors = []
+            for cls in major_classes['class']:
+                if cls in self.config.classes:
+                    idx = self.config.classes.index(cls)
+                    pie_colors.append(self.config.colors[idx])
+                else:
+                    pie_colors.append('lightgray')
+            pie_colors.append('lightgray')
+        else:
+            pie_data = list(major_classes['frequency'])
+            pie_labels = list(major_classes['class'])
+            pie_colors = [self.config.colors[self.config.classes.index(cls)] 
+                         for cls in major_classes['class']]
+
+        # 绘制饼图，使用多种技术避免文字重叠
+        wedges, texts, autotexts = ax2.pie(
+            pie_data, 
+            labels=pie_labels, 
+            colors=pie_colors, 
+            autopct='%1.1f%%',
+            startangle=90,
+            textprops={'fontsize': 10},
+            pctdistance=0.85,  # 百分比文字距离圆心的距离
+            labeldistance=1.05,  # 标签距离圆心的距离
+            wedgeprops={'linewidth': 1, 'edgecolor': 'white'},  # 添加边框使分割更清晰
+            rotatelabels=True  # 旋转标签以避免重叠
+        )
+
+        # 进一步优化小扇区的标签显示
+        for i, (wedge, autotext) in enumerate(zip(wedges, autotexts)):
+            # 如果扇区很小，调整百分比文字的位置和样式
+            if pie_data[i] / sum(pie_data) < 0.05:
+                # 将百分比文字移到扇区外部
+                autotext.set_color('black')
+                autotext.set_fontweight('bold')
+                autotext.set_fontsize(9)
+
+                # 对于非常小的扇区，使用引导线
+                if pie_data[i] / sum(pie_data) < 0.02:
+                    # 计算引导线的位置
+                    angle = (wedge.theta2 + wedge.theta1) / 2
+                    x = 1.3 * np.cos(np.radians(angle))
+                    y = 1.3 * np.sin(np.radians(angle))
+
+                    # 添加引导线
+                    ax2.plot([0.7 * np.cos(np.radians(angle)), 1.25 * np.cos(np.radians(angle))],
+                            [0.7 * np.sin(np.radians(angle)), 1.25 * np.sin(np.radians(angle))],
+                            color='gray', linewidth=0.8, alpha=0.7)
+
+                    # 调整标签位置
+                    texts[i].set_position((x, y))
+                    texts[i].set_fontsize(9)
+                    texts[i].set_bbox(dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8))
+
+        ax2.set_title('Class Distribution Pie Chart', fontsize=16, fontweight='bold')
+
+        # 确保饼图是圆形
+        ax2.axis('equal')
+
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path, dpi=200, bbox_inches='tight', facecolor='white')
+        plt.show()
+
+        return df
+
+    
+    def plot_image_sizes(self, size_stats, save_path=None, figsize=(12, 5)):
+        """Plot image size distribution"""
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+        
+        # Height distribution
+        ax1.hist(size_stats['heights'], bins=30, alpha=0.7, color='skyblue', edgecolor='black')
+        ax1.axvline(size_stats['avg_height'], color='red', linestyle='--', linewidth=2,
+                   label=f'Average Height: {size_stats["avg_height"]:.1f}')
+        ax1.set_xlabel('Image Height (pixels)', fontsize=12)
+        ax1.set_ylabel('Frequency', fontsize=12)
+        ax1.set_title('Image Height Distribution', fontsize=14, fontweight='bold')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Width distribution
+        ax2.hist(size_stats['widths'], bins=30, alpha=0.7, color='lightcoral', edgecolor='black')
+        ax2.axvline(size_stats['avg_width'], color='red', linestyle='--', linewidth=2,
+                   label=f'Average Width: {size_stats["avg_width"]:.1f}')
+        ax2.set_xlabel('Image Width (pixels)', fontsize=12)
+        ax2.set_ylabel('Frequency', fontsize=12)
+        ax2.set_title('Image Width Distribution', fontsize=14, fontweight='bold')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path, dpi=200, bbox_inches='tight', facecolor='white')
+        plt.show()
+CityscapesVisualizer类中定义了3个绘图函数
+
+函数
+功能
+1
+plot_mean_std(self, mean, std, save_path=None, figsize=(12, 5))
+绘制RGB三通道的均值和标准差的条形图
+2
+plot_class_distribution(self, class_distribution, save_path=None, figsize=(14, 12))
+绘制各类占比的分布图和饼图
+3
+plot_image_sizes(self, size_stats, save_path=None, figsize=(12, 5))
+绘制图像大小占比的分布图，这个函数没啥用
+打印输出
+def generate_report(stats, config):
+    """Generate data analysis report"""
+    print("\n" + "="*60)
+    print("Cityscapes Dataset Analysis Report")
+    print("="*60)
+    
+    print(f"\n1. Image Statistics:")
+    print(f"   - RGB Channel Means: {stats['mean']}")
+    print(f"   - RGB Channel Standard Deviations: {stats['std']}")
+    
+    size_stats = stats['size_stats']
+    print(f"\n2. Image Size Statistics:")
+    print(f"   - Average Size: {size_stats['avg_width']:.1f} × {size_stats['avg_height']:.1f}")
+    print(f"   - Minimum Size: {size_stats['min_width']} × {size_stats['min_height']}")
+    print(f"   - Maximum Size: {size_stats['max_width']} × {size_stats['max_height']}")
+    
+    print(f"\n3. Class Distribution (Top 5 most frequent classes):")
+    class_dist = stats['class_distribution']
+    sorted_classes = sorted(class_dist.items(), key=lambda x: x[1], reverse=True)[:5]
+    for class_id, freq in sorted_classes:
+        print(f"   - {config.classes[class_id]}: {freq:.4f}")
+    
+    print(f"\n4. Data Characteristics and Implications for Semantic Segmentation:")
+    print(f"   - Class Imbalance: Requires weighted loss functions or sampling strategies")
+    print(f"   - Consistent Image Sizes: Facilitates batch processing and model design")
+    print(f"   - Complex Scene Structure: Requires strong contextual modeling capabilities")
+    print(f"   - Fine-grained Boundaries: Requires high-resolution feature preservation")
+def run_complete_analysis(data_root, split='train', sample_size=200, save_results=True, load_existing=False):
+    """
+    Run complete Cityscapes dataset analysis
+    
+    Parameters:
+    - data_root: Path to Cityscapes dataset
+    - split: Dataset split to analyze ('train', 'val', 'test')
+    - sample_size: Number of samples to use for analysis
+    - save_results: Whether to save results to file
+    - load_existing: Whether to load existing statistics instead of recalculating
+    """
+    
+    # Initialize analyzer and visualizer
+    analyzer = CityscapesAnalyzer(data_root)
+    visualizer = CityscapesVisualizer(analyzer.config)
+    
+    # Try to load existing statistics
+    if load_existing:
+        if analyzer.load_stats('../result/analysis/cityscapes_statistics.json'):
+            print("Using existing statistics...")
+            # Generate report and visualizations from loaded data
+            generate_report(analyzer.stats, analyzer.config)
+            
+            # Create visualizations from loaded data
+            print("\nGenerating visualizations from loaded data...")
+            visualizer.plot_mean_std(analyzer.stats['mean'], analyzer.stats['std'],
+                                   save_path='../result/analysis/cityscapes_mean_std.png' if save_results else None)
+            
+            visualizer.plot_class_distribution(analyzer.stats['class_distribution'],
+                                             save_path='../result/analysis/cityscapes_class_distribution.png' if save_results else None)
+            
+            visualizer.plot_image_sizes(analyzer.stats['size_stats'],
+                                      save_path='../result/analysis/cityscapes_size_distribution.png' if save_results else None)
+            return
+    
+    # Get data paths
+    print("Scanning dataset...")
+    image_paths, label_paths = analyzer.get_image_paths(split)
+    print(f"Found {len(image_paths)} images and {len(label_paths)} labels")
+    
+    if len(image_paths) == 0:
+        print("Error: No data files found!")
+        print("Please check data path and file structure")
+        return
+    
+    # Perform analysis
+    print(f"\nStarting analysis of {split} dataset (Sample size: {min(sample_size, len(image_paths))})")
+    
+    # 1. Calculate mean and standard deviation
+    mean, std = analyzer.calculate_mean_std(image_paths, sample_size)
+    
+    # 2. Analyze class distribution
+    class_distribution = analyzer.analyze_class_distribution(label_paths, sample_size)
+    
+    # 3. Analyze image sizes
+    size_stats = analyzer.analyze_image_sizes(image_paths, sample_size)
+    
+    # Visualize results
+    print("\nGenerating visualizations...")
+    
+    # Plot mean and standard deviation
+    visualizer.plot_mean_std(mean, std, 
+                           save_path='../result/analysis/cityscapes_mean_std.png' if save_results else None)
+    
+    # Plot class distribution
+    df = visualizer.plot_class_distribution(class_distribution, 
+                                          save_path='../result/analysis/cityscapes_class_distribution.png' if save_results else None)
+    
+    # Plot image size distribution
+    visualizer.plot_image_sizes(size_stats, 
+                              save_path='../result/analysis/cityscapes_size_distribution.png' if save_results else None)
+    
+    # Save statistical results
+    if save_results:
+        analyzer.save_stats('../result/analysis/cityscapes_statistics.json')
+    
+    # Generate analysis report
+    generate_report(analyzer.stats, analyzer.config)
+# 数据分析（计算）
+DATA_ROOT = '../data/cityscapes'
+run_complete_analysis(
+    data_root=DATA_ROOT,
+    split='train',
+    sample_size=2975,  
+    save_results=True,
+    load_existing=False
+)
+图片输出
+[图片]
+[图片]
+[图片]
+文字输出
+Statistics saved to: ../result/analysis/cityscapes_statistics.json
+
+============================================================
+Cityscapes Dataset Analysis Report
+============================================================
+
+1. Image Statistics:
+   - RGB Channel Means: [0.2868955263176594, 0.32513300997345895, 0.2838917598514889]
+   - RGB Channel Standard Deviations: [0.18696374643722355, 0.19017338967818795, 0.1872021424522312]
+
+2. Image Size Statistics:
+   - Average Size: 2048.0 × 1024.0
+   - Minimum Size: 2048 × 1024
+   - Maximum Size: 2048 × 1024
+
+3. Class Distribution (Top 5 most frequent classes):
+   - road: 0.3687
+   - building: 0.2282
+   - vegetation: 0.1593
+   - car: 0.0699
+   - sidewalk: 0.0608
+
+
+2. 数据集处理
+下载好cityscapes数据集后解压，放到 ..../mmsegmentation/data/中，运行
+python tools/dataset_converters/cityscapes.py ./data/cityscapes --nproc 8
+对数据集进行处理，之后就可以进行训练了。
+对于图像裁切，翻转，尺度变换等数据增强都在mmsegmentation的./config/_base_/datasets/cityscapes.py中进行了定义。
+# dataset settings
+dataset_type = 'CityscapesDataset'
+data_root = 'data/cityscapes/'
+crop_size = (512, 1024)
+train_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(type='LoadAnnotations'),
+    dict(
+        type='RandomResize',
+        scale=(2048, 1024),
+        ratio_range=(0.5, 2.0),
+        keep_ratio=True),
+    dict(type='RandomCrop', crop_size=crop_size, cat_max_ratio=0.75),
+    dict(type='RandomFlip', prob=0.5),
+    dict(type='PhotoMetricDistortion'),
+    dict(type='PackSegInputs')
+]
+test_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(type='Resize', scale=(2048, 1024), keep_ratio=True),
+    # add loading annotation after ``Resize`` because ground truth
+    # does not need to do resize data transform
+    dict(type='LoadAnnotations'),
+    dict(type='PackSegInputs')
+]
+img_ratios = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75]
+tta_pipeline = [
+    dict(type='LoadImageFromFile', backend_args=None),
+    dict(
+        type='TestTimeAug',
+        transforms=[
+            [
+                dict(type='Resize', scale_factor=r, keep_ratio=True)
+                for r in img_ratios
+            ],
+            [
+                dict(type='RandomFlip', prob=0., direction='horizontal'),
+                dict(type='RandomFlip', prob=1., direction='horizontal')
+            ], [dict(type='LoadAnnotations')], [dict(type='PackSegInputs')]
+        ])
+]
+3. deeplabv3plus
+使用./configs/deeplabv3plus/deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024.py
+1. 开始训练
+python tools/train.py  configs/deeplabv3plus/deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024.py
+......
+10/24 01:12:43 - mmengine - INFO - Iter(train) [79900/80000]  lr: 1.2415e-04  eta: 0:00:31  time: 0.3197  data_time: 0.0075  memory: 7533  loss: 0.2676  decode.loss_ce: 0.1597  decode.acc_seg: 93.8902  aux.loss_ce: 0.1079  aux.acc_seg: 91.8654
+10/24 01:12:59 - mmengine - INFO - Iter(train) [79950/80000]  lr: 1.1294e-04  eta: 0:00:15  time: 0.3199  data_time: 0.0078  memory: 7533  loss: 0.3201  decode.loss_ce: 0.1999  decode.acc_seg: 95.9672  aux.loss_ce: 0.1202  aux.acc_seg: 92.7925
+10/24 01:13:15 - mmengine - INFO - Exp name: deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024_20251023_175333
+10/24 01:13:15 - mmengine - INFO - Iter(train) [80000/80000]  lr: 1.0000e-04  eta: 0:00:00  time: 0.3197  data_time: 0.0075  memory: 7533  loss: 0.3284  decode.loss_ce: 0.1870  decode.acc_seg: 93.1242  aux.loss_ce: 0.1415  aux.acc_seg: 90.7364
+10/24 01:13:15 - mmengine - INFO - Saving checkpoint at 80000 iterations
+10/24 01:13:25 - mmengine - INFO - Iter(val) [ 50/500]    eta: 0:01:16  time: 0.1671  data_time: 0.0093  memory: 2773  
+10/24 01:13:34 - mmengine - INFO - Iter(val) [100/500]    eta: 0:01:07  time: 0.1665  data_time: 0.0096  memory: 2773  
+10/24 01:13:42 - mmengine - INFO - Iter(val) [150/500]    eta: 0:00:58  time: 0.1663  data_time: 0.0093  memory: 2773  
+10/24 01:13:50 - mmengine - INFO - Iter(val) [200/500]    eta: 0:00:50  time: 0.1671  data_time: 0.0093  memory: 2773  
+10/24 01:13:59 - mmengine - INFO - Iter(val) [250/500]    eta: 0:00:41  time: 0.1664  data_time: 0.0094  memory: 2773  
+10/24 01:14:07 - mmengine - INFO - Iter(val) [300/500]    eta: 0:00:33  time: 0.1668  data_time: 0.0095  memory: 2773  
+10/24 01:14:15 - mmengine - INFO - Iter(val) [350/500]    eta: 0:00:25  time: 0.1670  data_time: 0.0099  memory: 2773  
+10/24 01:14:24 - mmengine - INFO - Iter(val) [400/500]    eta: 0:00:16  time: 0.1672  data_time: 0.0097  memory: 2773  
+10/24 01:14:32 - mmengine - INFO - Iter(val) [450/500]    eta: 0:00:08  time: 0.1677  data_time: 0.0099  memory: 2773  
+10/24 01:14:40 - mmengine - INFO - Iter(val) [500/500]    eta: 0:00:00  time: 0.1667  data_time: 0.0095  memory: 2773  
+10/24 01:14:40 - mmengine - INFO - per class results:
+10/24 01:14:40 - mmengine - INFO - 
++---------------+-------+-------+
+|     Class     |  IoU  |  Acc  |
++---------------+-------+-------+
+|      road     | 96.46 |  97.5 |
+|    sidewalk   | 80.23 | 89.45 |
+|    building   | 88.73 | 95.47 |
+|      wall     | 34.81 | 37.31 |
+|     fence     | 51.58 | 65.53 |
+|      pole     | 59.78 |  74.3 |
+| traffic light | 64.04 | 77.32 |
+|  traffic sign | 72.82 |  81.9 |
+|   vegetation  |  91.0 |  96.6 |
+|    terrain    | 56.71 | 63.49 |
+|      sky      | 93.27 | 97.52 |
+|     person    |  77.4 | 86.94 |
+|     rider     | 53.55 | 78.05 |
+|      car      | 92.94 | 97.23 |
+|     truck     | 50.72 | 68.15 |
+|      bus      | 56.41 | 62.71 |
+|     train     | 35.35 |  41.1 |
+|   motorcycle  | 45.51 |  52.7 |
+|    bicycle    | 70.84 | 83.11 |
++---------------+-------+-------+
+10/24 01:14:40 - mmengine - INFO - Iter(val) [500/500]    aAcc: 94.3700  mIoU: 66.9600  mAcc: 76.1200  data_time: 0.0099  time: 0.1673
+测试
+python tools/test.py configs/deeplabv3plus/deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024.py work_dirs/deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024/iter_80000.pth
+10/24 16:32:57 - mmengine - INFO - 
++---------------+-------+-------+
+|     Class     |  IoU  |  Acc  |
++---------------+-------+-------+
+|      road     | 96.46 |  97.5 |
+|    sidewalk   | 80.23 | 89.45 |
+|    building   | 88.73 | 95.47 |
+|      wall     | 34.81 | 37.31 |
+|     fence     | 51.58 | 65.53 |
+|      pole     | 59.78 |  74.3 |
+| traffic light | 64.04 | 77.32 |
+|  traffic sign | 72.82 |  81.9 |
+|   vegetation  |  91.0 |  96.6 |
+|    terrain    | 56.71 | 63.49 |
+|      sky      | 93.27 | 97.52 |
+|     person    |  77.4 | 86.94 |
+|     rider     | 53.55 | 78.05 |
+|      car      | 92.94 | 97.23 |
+|     truck     | 50.72 | 68.15 |
+|      bus      | 56.41 | 62.71 |
+|     train     | 35.35 |  41.1 |
+|   motorcycle  | 45.51 |  52.7 |
+|    bicycle    | 70.84 | 83.11 |
++---------------+-------+-------+
+10/24 16:32:57 - mmengine - INFO - Iter(test) [500/500]    aAcc: 94.3700  mIoU: 66.9600  mAcc: 76.1200  data_time: 0.0109  time: 0.1689
+
+绘图
+3.1 损失
+python tools/analysis_tools/analyze_logs.py work_dirs/deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024/20251023_175333/vis_data/20251023_175333.json --key loss --legend loss --out result/plot/loss_deeplabv3plus.jpg
+[图片]
+3.2 mIoU & mAcc & aAcc
+python tools/analysis_tools/analyze_logs.py work_dirs/deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024/20251023_175333/vis_data/20251023_175333.json --keys mIoU mAcc aAcc --legend mIoU mAcc aAcc --out result/plot/acc_deeplabv3plus.jpg
+[图片]
+3.3 分割结果
+python demo/image_demo.py demo/demo.png configs/deeplabv3plus/deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024.py work_dirs/deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024/iter_80000.pth --out-file result/plot/result_deeplabv3plus.jpg
+[图片]
+[图片]
+[图片]
+[图片]
+3.4 预测
+python tools/analysis_tools/visualization_cam.py demo/demo.png configs/deeplabv3plus/deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024.py work_dirs/deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024/iter_80000.pth --out-file result/plot/predict_deeplabv3plus.jpg --cam-file result/plot/cam_deeplabv3plus.jpg
+[图片]
+[图片]
+[图片]
+[图片]
+[图片]
+[图片]
+[图片]
+[图片]
+
+3.5 mask（左） &&  predict（右）
+python feature_map_visual.py ../mmseg/data/cityscapes/leftImg8bit/train/bremen/bremen_000000_000019_leftImg8bit.png  configs/deeplabv3plus/deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024.py  work_dirs/deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024/iter_80000.pth  --gt_mask ../mmseg/data/cityscapes/gtFine/train/bremen/bremen_000000_000019_gtFine_labelTrainIds.png
+# 这个代码在mmsegmentation中没有，可以在文档中找到这段代码，并添加到文件中。这是代码所在的链接https://github.com/open-mmlab/mmsegmentation/blob/main/docs/en/user_guides/visualization_feature_map.md 
+# wandb ： https://wandb.ai/alionf-robodiff/uncategorized/runs/njilzcwj
+[图片]
+[图片]
+[图片]
+[图片]
+[图片]
+[图片]
+预测的图像和原来标注的数据基本保持一致，在某些图片中分割出的物体更多，比如图2中将单元门口上的灯检测成了路灯，图3中将小区的窗户当成了卡车，对于自动驾驶来说，这样的检测效果并不影响车辆的行驶。如果无法完美的匹配标注的数据，那么检测出更多的物体比检测不出物体更好。
+
+优化
+mmsegmentation提供了非常全面的方案，数据集的处理包括调整大小，裁切，水平翻转，光照失真调整等
+data_root = 'data/cityscapes/'
+crop_size = (512, 1024)
+train_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(type='LoadAnnotations'),
+    dict(
+        type='RandomResize',
+        scale=(2048, 1024),
+        ratio_range=(0.5, 2.0),
+        keep_ratio=True),
+    dict(type='RandomCrop', crop_size=crop_size, cat_max_ratio=0.75),
+    dict(type='RandomFlip', prob=0.5),
+    dict(type='PhotoMetricDistortion'),
+    dict(type='PackSegInputs')
+]
+模型架构使用了50层的残差网作为骨干网络，还在不同阶段进行空洞卷积（不降低清晰度的同时扩大感受野）
+model = dict(
+    type='EncoderDecoder',
+    data_preprocessor=data_preprocessor,
+    pretrained='open-mmlab://resnet50_v1c',
+    backbone=dict(
+        type='ResNetV1c',
+        depth=50,
+        num_stages=4,
+        out_indices=(0, 1, 2, 3),
+        dilations=(1, 1, 2, 4),
+        strides=(1, 2, 1, 1),
+        norm_cfg=norm_cfg,
+        norm_eval=False,
+        style='pytorch',
+        contract_dilation=True),
+    decode_head=dict(
+        type='DepthwiseSeparableASPPHead',
+        in_channels=2048,
+        in_index=3,
+        channels=512,
+        dilations=(1, 12, 24, 36),
+        c1_in_channels=256,
+        c1_channels=48,
+        dropout_ratio=0.1,
+        num_classes=19,
+        norm_cfg=norm_cfg,
+        align_corners=False,
+        loss_decode=dict(
+            type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)),
+优化器和学习率方面采用了SGD优化器和PolyLR自衰减学习率
+# optimizer
+optimizer = dict(type='SGD', lr=0.01, momentum=0.9, weight_decay=0.0005)
+optim_wrapper = dict(type='OptimWrapper', optimizer=optimizer, clip_grad=None)
+# learning policy
+param_scheduler = [
+    dict(
+        type='PolyLR',
+        eta_min=1e-4,
+        power=0.9,
+        begin=0,
+        end=80000,
+        by_epoch=False)
+]
+
+
+修改（尝试一）：
+模型采用多损失组合的形式，在交叉熵损失的基础上添加focal loss，因为进行数据分析时得到各个类别的占比不同，采用focalloss来缓解数据分布不均衡的问题。（我感觉这个作用不大，网上说cityscapes数据集的样本挺均衡的，代码都跑起来了，先跑完看看效果再改吧）
+# loss_decode=dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)),
+        loss_decode=[
+            dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
+            dict(type='FocalLoss', loss_weight=0.5, gamma=2.0, alpha=0.25)
+        ],
+# loss_decode=dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)),
+        loss_decode=[
+           dict(type='CrossEntropyLoss', loss_weight=1.0),
+            dict(type='DiceLoss', loss_weight=0.5),  # 添加Dice Loss
+            dict(type='LovaszLoss', loss_weight=0.5, reduction='none')  # 边界优化
+        ],
+优化器采用AdamW，学习率设为0.001（降低到原本学习率的1/10）
+# optimizer = dict(type='SGD', lr=0.01, momentum=0.9, weight_decay=0.0005)
+optimizer = dict(type='AdamW', lr=0.001, betas=(0.9, 0.999), weight_decay=0.01)
+先修改这么多，一次改太多了跑不起来还得调。
+结果：
+10/26 01:49:10 - mmengine - INFO - Iter(train) [79950/80000]  lr: 1.0118e-04  eta: 0:00:16  time: 0.3252  data_time: 0.0083  memory: 7856  loss: 0.1929  decode.loss_ce: 0.1246  decode.loss_focal: 0.0008  decode.acc_seg: 93.2867  aux.loss_ce: 0.0675  aux.acc_seg: 93.3092
+10/26 01:49:26 - mmengine - INFO - Exp name: deeplabv3plus_r50-d8_4xb2-80k_cityscapes-512x1024_20251025_182309
+
++---------------+-------+-------+
+|     Class     |  IoU  |  Acc  |
++---------------+-------+-------+
+|      road     | 97.53 |  98.9 |
+|    sidewalk   | 81.78 | 89.42 |
+|    building   | 90.78 | 95.04 |
+|      wall     | 32.08 | 35.23 |
+|     fence     |  48.6 | 64.57 |
+|      pole     | 61.37 | 77.97 |
+| traffic light | 65.15 | 80.14 |
+|  traffic sign | 72.09 | 86.23 |
+|   vegetation  | 90.76 | 96.63 |
+|    terrain    | 48.42 |  53.8 |
+|      sky      | 92.62 | 98.37 |
+|     person    | 77.06 | 87.68 |
+|     rider     |  54.4 | 74.12 |
+|      car      | 91.98 | 96.04 |
+|     truck     | 43.18 | 74.06 |
+|      bus      | 36.22 | 40.58 |
+|     train     |  7.7  |  7.9  |
+|   motorcycle  | 47.69 | 61.45 |
+|    bicycle    | 72.95 | 84.52 |
++---------------+-------+-------+
+10/26 01:50:54 - mmengine - INFO - Iter(val) [500/500]    aAcc: 94.6500  mIoU: 63.8100  mAcc: 73.8200  data_time: 0.0112  time: 0.1686
+mIoU还降低了3个点，效果不是很好。
+
+修改（尝试二）：
+model = dict(
+    type='EncoderDecoder',
+    data_preprocessor=data_preprocessor,
+    pretrained='open-mmlab://msra/hrnetv2_w32',
+    backbone=dict(
+        type='HRNet',
+        extra=dict(
+            stage1=dict(
+                num_modules=1,
+                num_branches=1,
+                block='BOTTLENECK',
+                num_blocks=(4,),
+                num_channels=(64,)),
+            stage2=dict(
+                num_modules=1,
+                num_branches=2,
+                block='BASIC',
+                num_blocks=(4, 4),
+                num_channels=(32, 64)),
+            stage3=dict(
+                num_modules=4,
+                num_branches=3,
+                block='BASIC',
+                num_blocks=(4, 4, 4),
+                num_channels=(32, 64, 128)),
+            stage4=dict(
+                num_modules=3,
+                num_branches=4,
+                block='BASIC',
+                num_blocks=(4, 4, 4, 4),
+                num_channels=(32, 64, 128, 256))),
+        norm_cfg=norm_cfg
+    ),
+    
+    decode_head=dict(
+        type='DepthwiseSeparableASPPHead',
+        in_channels=256,  # HRNet最终输出通道数
+        in_index=3,       # 使用HRNet的最后一个输出
+        channels=512,
+        dilations=(1, 12, 24, 36),
+        c1_in_channels=32,  # HRNet stage2的输出通道数
+        c1_channels=48,
+        dropout_ratio=0.1,
+        num_classes=19,
+        norm_cfg=norm_cfg,
+        align_corners=False,
+        loss_decode=dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
+    ),
+    
+    auxiliary_head=dict(
+        type='FCNHead',
+        in_channels=128,
+        in_index=2,
+        channels=256,
+        num_convs=1,
+        concat_input=False,
+        dropout_ratio=0.1,
+        num_classes=19,
+        norm_cfg=norm_cfg,
+        align_corners=False,
+        loss_decode=dict(
+            type='CrossEntropyLoss', use_sigmoid=False, loss_weight=0.4)),
+    
+    train_cfg=dict(),
+    test_cfg=dict(mode='whole'))
+只修改backbone，从resnet到HRNet
+这个结果相当不错，比原本的resnet提高了5个点，我感觉80k批次没有完全收敛，改成160k试一下。
+10/26 16:53:49 - mmengine - INFO - 
++---------------+-------+-------+
+|     Class     |  IoU  |  Acc  |
++---------------+-------+-------+
+|      road     | 98.04 | 98.76 |
+|    sidewalk   | 84.14 | 92.99 |
+|    building   | 91.68 | 96.42 |
+|      wall     | 47.09 | 51.32 |
+|     fence     | 59.11 | 71.92 |
+|      pole     | 64.39 | 75.53 |
+| traffic light | 67.52 | 77.51 |
+|  traffic sign |  77.9 | 85.58 |
+|   vegetation  | 92.09 | 96.87 |
+|    terrain    | 60.12 | 66.58 |
+|      sky      | 93.65 | 95.94 |
+|     person    | 80.55 | 89.63 |
+|     rider     | 59.71 | 76.24 |
+|      car      | 94.11 | 97.54 |
+|     truck     | 70.43 | 84.99 |
+|      bus      | 64.96 | 76.05 |
+|     train     | 33.13 | 35.41 |
+|   motorcycle  | 46.01 | 53.64 |
+|    bicycle    | 73.77 | 87.24 |
++---------------+-------+-------+
+10/26 16:53:49 - mmengine - INFO - Iter(val) [500/500]    aAcc: 95.6400  mIoU: 71.5000  mAcc: 79.4800  data_time: 0.0105  time: 0.0984
+修改为160K之后的训练效果并没有显著提升，并且在训练中期出现了mIoU的下降。
++---------------+-------+-------+
+|     Class     |  IoU  |  Acc  |
++---------------+-------+-------+
+|      road     | 98.18 | 98.83 |
+|    sidewalk   | 84.67 | 93.73 |
+|    building   | 91.75 | 96.29 |
+|      wall     | 49.79 | 55.11 |
+|     fence     | 57.13 | 66.94 |
+|      pole     | 64.57 | 78.59 |
+| traffic light | 70.04 | 79.68 |
+|  traffic sign | 78.81 | 84.85 |
+|   vegetation  | 92.24 | 96.81 |
+|    terrain    | 59.66 | 65.01 |
+|      sky      | 94.01 | 97.46 |
+|     person    | 81.08 | 89.78 |
+|     rider     | 59.99 | 76.69 |
+|      car      | 93.53 |  97.7 |
+|     truck     | 53.95 | 75.55 |
+|      bus      | 49.75 | 50.68 |
+|     train     | 41.52 |  43.5 |
+|   motorcycle  | 54.17 | 63.88 |
+|    bicycle    | 74.87 | 88.52 |
++---------------+-------+-------+
+10/27 03:45:32 - mmengine - INFO - Iter(val) [500/500]    aAcc: 95.6500  mIoU: 71.0400  mAcc: 78.9300  data_time: 0.0108  time: 0.0996
+因为160k次训练和80k的效果相近，所以后面使用80k的模型进行对比。
+优化前后对比
+==============================
+Compute type: direct: randomly generate a picture
+Input shape: (2048, 1024)
+Flops: 1.413T
+Params: 41.225M
+==============================
+==============================
+Compute type: direct: randomly generate a picture
+Input shape: (2048, 1024)
+Flops: 0.431T
+Params: 42.346M
+==============================
+
+计算量（Flops）
+参数量（Params）
+resnet-50
+1.413T
+41.225M
+HrNet
+0.413T
+42.346M
+对比：左（官方配置ResNet50） && 右（HrNet）
+[图片]
+[图片]
+[图片]
+[图片]
+[图片]
+[图片]
+deeplabv3plus-r50模型结构
+暂时无法在飞书文档外展示此内容
+
+[图片]
+
+
+
+deeplabv3plus_hrnet模型结构
+暂时无法在飞书文档外展示此内容
+[图片]
+混淆矩阵
+[图片]
+模型对“墙”的预测效果较差，25.72%的概率预测为建筑物（好像也没啥毛病）,13.86%概率预测为植被（观察数据集，有些植被和墙形成了相互遮挡的关系），7.83%的概率预测为栅栏。同样的栅栏也有18.29%的概率被预测为墙。
+小汽车完全没有预测成功，按照占比排列分别预测为建筑物（36.89%），植被（23.1%），路（18.67%）和杆（11.9%），可是看预测图，里面有car的预测结果，不能就这一张预测到了吧！！！
+[图片]
+[图片]
+消融实验
+去掉ASPP模块儿检验ASPP的作用
+_base_ = [
+    '../_base_/models/deeplabv3plus_r50-d8.py',
+    '../_base_/datasets/cityscapes.py', '../_base_/default_runtime.py',
+    '../_base_/schedules/schedule_80k.py'
+]
+crop_size = (512, 1024)
+data_preprocessor = dict(size=crop_size)
+model = dict(
+    data_preprocessor=data_preprocessor,
+    decode_head=dict(
+        _delete_=True,
+        type='FCNHead',           # 替换为无ASPP结构的FCNHead
+        in_channels=2048,         # ResNet最后一层输出
+        in_index=3,
+        channels=512,
+        num_convs=2,              # 可调整卷积层数进行结构对比，可设1或2
+        dropout_ratio=0.1,
+        num_classes=19,
+        norm_cfg=dict(type='BN', requires_grad=True),
+        align_corners=False,
+        loss_decode=dict(
+            type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)
+    ),
+    # 辅助头保留，用于额外监督
+    auxiliary_head=dict(
+        type='FCNHead',
+        in_channels=1024,   
+        in_index=2,
+        channels=256,
+        num_convs=1,
+        concat_input=False,
+        dropout_ratio=0.1,
+        num_classes=19,
+        norm_cfg=dict(type='BN', requires_grad=True),
+        align_corners=False,
+        loss_decode=dict(
+            type='CrossEntropyLoss', use_sigmoid=False, loss_weight=0.4
+        )
+    )
+)
+
+
+
+4. mask2former
+使用./configs/mask2former/mask2former_r50_8xb2-90k_cityscapes-512x1024.py
+1. 开始训练
+python tools/train.py configs/mask2former/mask2former_r50_8xb2-90k_cityscapes-512x1024.py
+......
+2025/10/25 03:08:10 - mmengine - INFO - Iter(train) [89950/90000]  base_lr: 1.1756e-07 lr: 1.1756e-08  eta: 0:00:14  time: 0.3041  data_time: 0.0129  memory: 5795  grad_norm: 122.2192  loss: 20.6566  decode.loss_cls: 0.3326  decode.loss_mask: 0.4963  decode.loss_dice: 1.1532  decode.d0.loss_cls: 0.4805  decode.d0.loss_mask: 0.5299  decode.d0.loss_dice: 1.2278  decode.d1.loss_cls: 0.4751  decode.d1.loss_mask: 0.4915  decode.d1.loss_dice: 1.1721  decode.d2.loss_cls: 0.5121  decode.d2.loss_mask: 0.4846  decode.d2.loss_dice: 1.1517  decode.d3.loss_cls: 0.4060  decode.d3.loss_mask: 0.5010  decode.d3.loss_dice: 1.1462  decode.d4.loss_cls: 0.4362  decode.d4.loss_mask: 0.4941  decode.d4.loss_dice: 1.1220  decode.d5.loss_cls: 0.4205  decode.d5.loss_mask: 0.4877  decode.d5.loss_dice: 1.1066  decode.d6.loss_cls: 0.3958  decode.d6.loss_mask: 0.4925  decode.d6.loss_dice: 1.1274  decode.d7.loss_cls: 0.4042  decode.d7.loss_mask: 0.4903  decode.d7.loss_dice: 1.1059  decode.d8.loss_cls: 0.3853  decode.d8.loss_mask: 0.4955  decode.d8.loss_dice: 1.1321
+2025/10/25 03:08:25 - mmengine - INFO - Exp name: mask2former_r50_8xb2-90k_cityscapes-512x1024_20251024_191959
+2025/10/25 03:08:25 - mmengine - INFO - Iter(train) [90000/90000]  base_lr: 0.0000e+00 lr: 0.0000e+00  eta: 0:00:00  time: 0.3036  data_time: 0.0130  memory: 5795  grad_norm: 123.0276  loss: 18.8318  decode.loss_cls: 0.4077  decode.loss_mask: 0.4860  decode.loss_dice: 0.9996  decode.d0.loss_cls: 0.4482  decode.d0.loss_mask: 0.5178  decode.d0.loss_dice: 1.1791  decode.d1.loss_cls: 0.2845  decode.d1.loss_mask: 0.5003  decode.d1.loss_dice: 1.0734  decode.d2.loss_cls: 0.3455  decode.d2.loss_mask: 0.4910  decode.d2.loss_dice: 1.0591  decode.d3.loss_cls: 0.3448  decode.d3.loss_mask: 0.4707  decode.d3.loss_dice: 1.0181  decode.d4.loss_cls: 0.3457  decode.d4.loss_mask: 0.4831  decode.d4.loss_dice: 1.0150  decode.d5.loss_cls: 0.3190  decode.d5.loss_mask: 0.4883  decode.d5.loss_dice: 1.0354  decode.d6.loss_cls: 0.3314  decode.d6.loss_mask: 0.4875  decode.d6.loss_dice: 1.0207  decode.d7.loss_cls: 0.3354  decode.d7.loss_mask: 0.4861  decode.d7.loss_dice: 0.9909  decode.d8.loss_cls: 0.3720  decode.d8.loss_mask: 0.4872  decode.d8.loss_dice: 1.0084
+2025/10/25 03:08:25 - mmengine - INFO - Saving checkpoint at 90000 iterations
+2025/10/25 03:08:34 - mmengine - INFO - Iter(val) [ 50/500]    eta: 0:01:03  time: 0.1443  data_time: 0.0102  memory: 3215  
+2025/10/25 03:08:41 - mmengine - INFO - Iter(val) [100/500]    eta: 0:00:55  time: 0.1352  data_time: 0.0100  memory: 3215  
+2025/10/25 03:08:48 - mmengine - INFO - Iter(val) [150/500]    eta: 0:00:48  time: 0.1354  data_time: 0.0100  memory: 3215  
+2025/10/25 03:08:55 - mmengine - INFO - Iter(val) [200/500]    eta: 0:00:41  time: 0.1363  data_time: 0.0099  memory: 3215  
+2025/10/25 03:09:02 - mmengine - INFO - Iter(val) [250/500]    eta: 0:00:34  time: 0.1355  data_time: 0.0100  memory: 3215  
+2025/10/25 03:09:08 - mmengine - INFO - Iter(val) [300/500]    eta: 0:00:27  time: 0.1356  data_time: 0.0099  memory: 3215  
+2025/10/25 03:09:15 - mmengine - INFO - Iter(val) [350/500]    eta: 0:00:20  time: 0.1365  data_time: 0.0101  memory: 3215  
+2025/10/25 03:09:22 - mmengine - INFO - Iter(val) [400/500]    eta: 0:00:13  time: 0.1352  data_time: 0.0099  memory: 3215  
+2025/10/25 03:09:29 - mmengine - INFO - Iter(val) [450/500]    eta: 0:00:06  time: 0.1352  data_time: 0.0099  memory: 3215  
+2025/10/25 03:09:36 - mmengine - INFO - Iter(val) [500/500]    eta: 0:00:00  time: 0.1359  data_time: 0.0099  memory: 3215  
+2025/10/25 03:09:36 - mmengine - INFO - per class results:
+2025/10/25 03:09:36 - mmengine - INFO - 
++---------------+-------+-------+
+|     Class     |  IoU  |  Acc  |
++---------------+-------+-------+
+|      road     | 98.18 | 98.74 |
+|    sidewalk   | 85.45 | 94.45 |
+|    building   | 92.91 | 96.56 |
+|      wall     | 53.09 | 63.58 |
+|     fence     | 61.31 | 77.18 |
+|      pole     | 67.98 | 78.16 |
+| traffic light | 73.02 | 83.53 |
+|  traffic sign | 81.03 | 87.14 |
+|   vegetation  | 92.47 | 96.08 |
+|    terrain    | 62.94 | 79.07 |
+|      sky      | 94.81 | 98.35 |
+|     person    | 83.84 | 90.99 |
+|     rider     | 67.07 | 81.54 |
+|      car      | 95.35 | 97.51 |
+|     truck     | 76.71 | 90.54 |
+|      bus      | 84.41 | 94.37 |
+|     train     | 56.59 | 61.95 |
+|   motorcycle  |  61.6 | 76.49 |
+|    bicycle    |  79.2 | 89.25 |
++---------------+-------+-------+
+2025/10/25 03:09:36 - mmengine - INFO - Iter(val) [500/500]    aAcc: 96.1600  mIoU: 77.2600  mAcc: 86.0800  data_time: 0.0103  time: 0.1363
+测试
+python tools/test.py configs/mask2former/mask2former_r50_8xb2-90k_cityscapes-512x1024.py work_dirs/mask2former_r50_8xb2-90k_cityscapes-512x1024/iter_90000.pth
+10/25 12:40:22 - mmengine - INFO - per class results:
+10/25 12:40:22 - mmengine - INFO - 
++---------------+-------+-------+
+|     Class     |  IoU  |  Acc  |
++---------------+-------+-------+
+|      road     | 98.18 | 98.74 |
+|    sidewalk   | 85.45 | 94.45 |
+|    building   | 92.91 | 96.56 |
+|      wall     | 53.08 | 63.57 |
+|     fence     | 61.32 | 77.19 |
+|      pole     | 67.98 | 78.16 |
+| traffic light | 73.02 | 83.53 |
+|  traffic sign | 81.03 | 87.14 |
+|   vegetation  | 92.47 | 96.08 |
+|    terrain    | 62.93 | 79.07 |
+|      sky      | 94.81 | 98.35 |
+|     person    | 83.84 | 90.98 |
+|     rider     | 67.06 | 81.54 |
+|      car      | 95.35 | 97.51 |
+|     truck     | 76.72 | 90.54 |
+|      bus      | 84.41 | 94.37 |
+|     train     | 56.59 | 61.95 |
+|   motorcycle  |  61.6 | 76.48 |
+|    bicycle    |  79.2 | 89.25 |
++---------------+-------+-------+
+10/25 12:40:22 - mmengine - INFO - Iter(test) [500/500]    aAcc: 96.1600  mIoU: 77.2600  mAcc: 86.0800  data_time: 0.0128  time: 0.1402
+绘图
+1. 损失
+python tools/analysis_tools/analyze_logs.py work_dirs/mask2former_r50_8xb2-90k_cityscapes-512x1024/20251024_191959/vis_data/20251024_191959.json --key loss --legend loss --out result/plot/loss_mask2former.jpg
+[图片]
+2. mIoU & mAcc & aAcc
+python tools/analysis_tools/analyze_logs.py work_dirs/mask2former_r50_8xb2-90k_cityscapes-512x1024/20251024_191959/vis_data/20251024_191959.json --keys mIoU mAcc aAcc --legend mIoU mAcc aAcc --out result/plot/acc_mask2former.jpg
+[图片]
+3. 分割结果
+python demo/image_demo.py demo/demo.png  configs/mask2former/mask2former_r50_8xb2-90k_cityscapes-512x1024.py work_dirs/mask2former_r50_8xb2-90k_cityscapes-512x1024/iter_90000.pth --out-file result/plot/result_mask2former.jpg
+python demo/image_demo.py data/cityscapes/leftImg8bit/train/bremen/bremen_000100_000019_leftImg8bit.png  configs/mask2former/mask2former_r50_8xb2-90k_cityscapes-512x1024.py work_dirs/mask2former_r50_8xb2-90k_cityscapes-512x1024/iter_90000.pth --out-file result/plot/result_1_mask2former.jpg
+python demo/image_demo.py data/cityscapes/leftImg8bit/train/bremen/bremen_000101_000019_leftImg8bit.png  configs/mask2former/mask2former_r50_8xb2-90k_cityscapes-512x1024.py work_dirs/mask2former_r50_8xb2-90k_cityscapes-512x1024/iter_90000.pth --out-file result/plot/result_2_mask2former.jpg
+python demo/image_demo.py data/cityscapes/leftImg8bit/train/bremen/bremen_000102_000019_leftImg8bit.png  configs/mask2former/mask2former_r50_8xb2-90k_cityscapes-512x1024.py work_dirs/mask2former_r50_8xb2-90k_cityscapes-512x1024/iter_90000.pth --out-file result/plot/result_3_mask2former.jpg
+[图片]
+[图片]
+[图片]
+[图片]
+4. 预测
+[图片]
+[图片]
+[图片]
+[图片]
+
+[图片]
+
+
+疑问
+[图片]
+[图片]
+按照mmsegmentation提供的文件进行训练，得到的mIoU只有66.96，与github中给出的80.09相差很多，
+而同样是官方提供的mask2former配置文件训练得到的mIoU有77.26，与标注的80.44相差并不是很多。
+
+
+
+文档（LaTex代码样例）
+\documentclass[12pt]{ctexart}
+
+\usepackage[UTF8, scheme=plain]{ctex}
+\setCJKmainfont{Noto Serif CJK SC}[BoldFont=Noto Sans CJK SC]
+\setCJKsansfont{Noto Sans CJK SC}
+\setCJKmonofont{Noto Sans Mono CJK SC}
+
+\usepackage{geometry}
+\geometry{a4paper, left=2.5cm, right=2.5cm, top=3cm, bottom=3cm}
+
+\usepackage{enumitem}
+\usepackage{pifont}
+
+\newcommand{\cmark}{\ding{51}}
+\newcommand{\openbox}{\ding{110}}
+
+\newlist{todolist}{itemize}{3}
+\setlist[todolist,1]{label={}, leftmargin=2.5em, itemsep=0.8em}
+\setlist[todolist,2]{label={}, leftmargin=3.5em, itemsep=0.6em}
+\setlist[todolist,3]{label={}, leftmargin=4.5em, itemsep=0.4em}
+
+\newcommand{\doneitem}[1]{\item[\cmark]\ #1}
+\newcommand{\todoitem}[1]{\item[\openbox]\ #1}
+
+\begin{document}
+\begin{titlepage}
+    \centering
+    \vspace*{0.12\textheight}
+    {\bfseries\zihao{1}人工智能系统综合实践\par}
+    \vspace{2.5em}
+    {\zihao{2}cityscapes数据集上的图像语义分割\par}
+    \vfill
+    \begin{flushright}
+      \zihao{-2}\begin{tabular}{@{}ll@{}}
+        学院： & 信息工程学院 \\
+        学号： & 1210604006 \\
+        姓名： & 胡三
+      \end{tabular}
+    \end{flushright}
+\end{titlepage}
+
+\newpage
+\section{目录}
+\tableofcontents
+\newpage
+
+\section{任务分析}
+对于cityscapes数据集进行语义分割，需要完成以下任务：
+\begin{todolist}
+  \doneitem{数据分析}
+  \doneitem{数据增强}
+    \begin{todolist}
+      \doneitem{缩放 \& 裁剪 \& 水平翻转}
+    \end{todolist}
+  \doneitem{deeplabv3plus-r50模型训练}
+  \doneitem{deeplabv3plus-r50模型测试以及可视化}
+  \begin{todolist}
+    \doneitem{loss \& mIoU曲线}
+    \doneitem{预测结果 \& CAM图}
+    \doneitem{混淆矩阵}
+  \end{todolist}
+  \doneitem{绘制模型结构}
+\end{todolist}
+\begin{todolist}
+  \todoitem{模型优化}
+    \begin{todolist}
+      \todoitem{调整学习率策略}
+      \doneitem{更换backbone为hrnet}
+      \todoitem{增加数据增强方法}
+    \end{todolist}
+\end{todolist}
+
+\section{设计思路}
+这里是设计思路部分的内容。
+\section{系统实现}
+这里是系统实现部分的内容。
+\section{实验结果}
+这里是实验结果部分的内容。
+\section{总结与展望}
+这里是总结与展望部分的内容。
+
+\end{document}
+
+
